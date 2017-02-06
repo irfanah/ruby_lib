@@ -17,12 +17,12 @@ describe 'driver' do
     data.strip.must_equal 174.chr('UTF-8')
   end
 
-  t 'load_appium_txt' do
+  t 'load_settings' do
     # skip this test if we're using Sauce
     # the storage API doesn't have an on disk file
     skip if sauce?
-    appium_txt = File.expand_path(File.join(Dir.pwd, 'lib'))
-    opts       = Appium.load_appium_txt file: appium_txt, verbose: true
+    appium_txt = File.join(Dir.pwd, 'appium.txt')
+    opts       = Appium.load_settings file: appium_txt, verbose: true
 
     actual   = ''
     actual   = File.basename opts[:caps][:app] if opts && opts[:caps]
@@ -30,54 +30,110 @@ describe 'driver' do
     assert_equal expected, actual
   end
 
+  t 'verify Appium::Driver::Capabilities.init_caps_for_appium' do
+    expected_app = File.absolute_path('UICatalog.app')
+    caps = ::Appium::Driver::Capabilities.init_caps_for_appium(platformName:    'ios',
+                                                               platformVersion: '10.2',
+                                                               automationName:  'XCUITest',
+                                                               deviceName:      'iPhone Simulator',
+                                                               app:             expected_app,
+                                                               some_capability: 'some_capability')
+    caps_with_json = JSON.parse(caps.to_json)
+    caps_with_json['platformName'].must_equal 'ios'
+    caps_with_json['platformVersion'].must_equal '10.2'
+    caps_with_json['app'].must_equal expected_app
+    caps_with_json['automationName'].must_equal 'XCUITest'
+    caps_with_json['deviceName'].must_equal 'iPhone Simulator'
+    caps_with_json['someCapability'].must_equal 'some_capability'
+
+    caps[:platformName].must_equal 'ios'
+    caps[:platformVersion].must_equal '10.2'
+    caps[:app].must_equal expected_app
+    caps[:automationName].must_equal 'XCUITest'
+    caps[:deviceName].must_equal 'iPhone Simulator'
+    caps[:some_capability].must_equal 'some_capability'
+  end
+
   describe 'Appium::Driver attributes' do
     t 'verify all attributes' do
-      2.times { set_wait 30 } # must set twice to validate last_waits
-      actual              = driver_attributes
-      actual[:caps][:app] = File.basename actual[:caps][:app]
-      expected            = { caps:             { platformName: 'ios',
-                                                  platformVersion: '9.3',
-                                                  deviceName:   'iPhone Simulator',
-                                                  app:          'UICatalog.app' },
+      actual                = driver_attributes
+      caps_app_for_teardown = actual[:caps][:app]
+      expected_app = File.absolute_path('UICatalog.app')
+
+      expected            = { automation_name:  'XCUITest',
                               custom_url:       false,
                               export_session:   false,
                               default_wait:     30,
-                              last_waits:       [30, 30],
                               sauce_username:   nil,
                               sauce_access_key: nil,
                               port:             4723,
                               device:           :ios,
                               debug:            true,
-                              listener:         nil }
+                              listener:         nil,
+                              wait_timeout:     20,  # defined in appium.txt
+                              wait_interval:    1 }  # defined in appium.txt
 
-      if actual != expected
+      # actual[:caps].to_json send to Appium server
+      caps_with_json = JSON.parse(actual[:caps].to_json)
+      caps_with_json['platformName'].must_equal 'ios'
+      caps_with_json['platformVersion'].must_equal '10.2'
+      caps_with_json['app'].must_equal expected_app
+      caps_with_json['automationName'].must_equal 'XCUITest'
+      caps_with_json['deviceName'].must_equal 'iPhone Simulator'
+      caps_with_json['someCapability'].must_equal 'some_capability'
+
+      actual[:caps][:platformName].must_equal 'ios'
+      actual[:caps][:platformVersion].must_equal '10.2'
+      actual[:caps][:app].must_equal expected_app
+      actual[:caps][:automationName].must_equal 'XCUITest'
+      actual[:caps][:deviceName].must_equal 'iPhone Simulator'
+      actual[:caps][:some_capability].must_equal 'some_capability'
+
+      dup_actual = actual.dup
+      dup_actual.delete(:caps)
+
+      if dup_actual != expected
         diff    = HashDiff.diff expected, actual
         diff    = "diff (expected, actual):\n#{diff}"
+
+        actual[:caps][:app] = caps_app_for_teardown
         # example:
         # change :ios in expected to match 'ios' in actual
         # [["~", "caps.platformName", :ios, "ios"]]
         message = "\n\nactual:\n\n: #{actual.ai}expected:\n\n#{expected.ai}\n\n#{diff}"
-        fail message
+        raise message
       end
+
+      actual_selenium_caps = actual[:caps][:automationName]
+      actual_selenium_caps.must_equal 'XCUITest'
+      actual[:caps][:app] = caps_app_for_teardown
     end
 
     t 'verify attributes are immutable' do
+      driver_attributes[:custom_url] = true
+      expected                       = false
+      driver_attributes[:custom_url].must_equal expected
+    end
+
+    t 'verify attribute of :caps are not immutable becuse it depends on Selenium' do
+      # immutability depends on Selenium
+      for_clean_up                   = driver_attributes[:caps][:app].dup
       driver_attributes[:caps][:app] = 'fake'
-      actual                         = File.basename driver_attributes[:caps][:app]
-      expected                       = 'UICatalog.app'
-      actual.must_equal expected
+      expected                       = 'fake'
+      driver_attributes[:caps][:app].must_equal expected
+
+      # clean up
+      driver_attributes[:caps][:app] = for_clean_up
     end
 
     t 'no_wait' do
       no_wait
-      default_wait.must_equal 0
-      set_wait 30
+      proc { find_element(:accessibility_id, 'zz') }.must_raise Selenium::WebDriver::Error::NoSuchElementError
+      set_wait
     end
 
     t 'default_wait attr' do
-      set_wait 31 # set wait and no_wait update default_wait
-      default_wait.must_equal 31
-      set_wait 30
+      default_wait.must_equal 30
     end
 
     t 'app_path attr' do
@@ -117,6 +173,11 @@ describe 'driver' do
         sauce_access_key.must_be_nil
       end
     end
+
+    t 'default timeout for http client' do
+      http_client.open_timeout.must_equal 999_999
+      http_client.read_timeout.must_equal 999_999
+    end
   end
 
   describe 'Appium::Driver' do
@@ -139,13 +200,39 @@ describe 'driver' do
       end
     end
 
+    t 'client_version' do
+      client_version = appium_client_version
+      expected = { version: ::Appium::VERSION }
+      client_version.must_equal expected
+    end
+
+    t 'set_immediate_value' do
+      go_to_textfields
+
+      message = 'hello'
+
+      element = textfield(1)
+      element.click
+      element.clear
+
+      set_immediate_value(element, message)
+      element.text.must_equal message
+
+      set_wait 10
+      leave_textfields
+    end
+
     t 'restart' do
       restart
       text 'buttons'
     end
 
     t 'driver' do
-      driver.browser.must_equal :iOS
+      driver.browser.must_be_empty
+    end
+
+    t 'automation_name_is_xcuitest?' do
+      automation_name_is_xcuitest?.must_equal UI::Inventory.xcuitest?
     end
 
     #
@@ -168,11 +255,11 @@ describe 'driver' do
       set_wait(2).must_equal(2)
       set_wait.must_equal(30)
       set_wait(3).must_equal(3)
-      set_wait.must_equal(2)
+      set_wait.must_equal(30)
 
       set_wait(2).must_equal(2)
       set_wait(3).must_equal(3)
-      set_wait.must_equal(2)
+      set_wait.must_equal(30)
     end
 
     t 'default_wait' do
@@ -183,35 +270,34 @@ describe 'driver' do
     # returns true unless an error is raised
     t 'exists' do
       exists(0, 0) { true }.must_equal true
-      exists(0, 0) { fail 'error' }.must_equal false
+      exists(0, 0) { raise 'error' }.must_equal false
     end
 
     # simple integration sanity test to check for unexpected exceptions
     t 'set_location' do
+      raise NotImplementedError, "XCUITest(Appium1.6.2) doesn't support yet" if UI::Inventory.xcuitest?
       set_location latitude: 55, longitude: -72, altitude: 33
-    end
-
-    # any script
-    t 'execute_script' do
-      execute_script %q(au.mainApp().getFirstWithPredicate("name contains[c] 'button'");)
     end
 
     # any elements
     t 'find_elements' do
-      find_elements(:class, 'UIATableCell').length.must_equal 12
+      find_elements(:class, UI::Inventory.table_cell).length.must_equal 12
     end
 
     # any element
     t 'find_element' do
-      find_element(:class, 'UIAStaticText').class.must_equal Selenium::WebDriver::Element
+      find_element(:class, UI::Inventory.static_text).class.must_equal Selenium::WebDriver::Element
     end
 
     # settings
     t 'get settings' do
+      raise NotImplementedError, "XCUITest(Appium1.6.2) doesn't support yet" if UI::Inventory.xcuitest?
       get_settings.wont_be_nil
     end
 
     t 'update settings' do
+      raise NotImplementedError, "XCUITest(Appium1.6.2) doesn't support yet" if UI::Inventory.xcuitest?
+
       update_settings cyberdelia: 'open'
       get_settings['cyberdelia'].must_equal 'open'
     end
